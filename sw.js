@@ -1,4 +1,4 @@
-const CACHE = "grainmaster-cache-v7";
+const CACHE = "grainmaster-cache-v8";
 const CORE = [
   "./",
   "./index.html",
@@ -11,7 +11,6 @@ const CORE = [
   "./icons/icon-512.svg"
 ];
 
-// Cache-Bust Varianten ebenfalls erlauben
 function stripV(url){
   try{
     const u = new URL(url);
@@ -24,7 +23,7 @@ function stripV(url){
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
-    caches.open(CACHE).then(async (cache)=>{
+    caches.open(CACHE).then(async (cache)=> {
       await cache.addAll(CORE);
     }).then(()=> self.skipWaiting())
   );
@@ -38,8 +37,6 @@ self.addEventListener("activate", (event) => {
   );
 });
 
-// Network-first für HTML/JS, damit Updates sofort kommen.
-// Für alles andere cache-first.
 self.addEventListener("fetch", (event) => {
   const req = event.request;
   const url = new URL(req.url);
