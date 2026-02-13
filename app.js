@@ -1,15 +1,17 @@
 (function(){
   const $ = (id)=>document.getElementById(id);
-  const STORAGE_KEY = "grainmaster_v1";
+  const STORAGE_KEY = "grainmaster_v4_superlearning";
 
   const clone = (x)=>JSON.parse(JSON.stringify(x));
   const esc = (s)=>String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
   const clamp = (v,min,max)=>Math.max(min,Math.min(max,v));
   const round = (v,p=0)=>{const m=10**p; return Math.round(v*m)/m;};
 
-  // Sichtbare Fehler (damit nie wieder "passiert nichts")
   window.addEventListener("error", (e)=> alert("App-Fehler: " + (e.message || e.error || "Unbekannt")));
   window.addEventListener("unhandledrejection", (e)=> alert("Promise-Fehler: " + (e.reason?.message || e.reason || "Unbekannt")));
+
+  // Muss zu machine-data.js passen
+  const SET_KEYS = ["rotor","concaveFront","concaveRear","fan","upperSieve","lowerSieve","speed"];
 
   const DEFAULT = {
     machine: { brand:null, modelId:null },
@@ -18,7 +20,23 @@
     selectedProblems: [],
     settings: null,
     steps: [],
-    learning: {}
+    learning: {},   // problem learning -2..2
+
+    // ✅ SUPER LEARNING: Aggregierte Statistiken (zählt ALLE male, nicht nur letzte 5)
+    // stats[key] = { nAll, sumAll{...}, nRated, sumRated{...}, lastTs }
+    stats: {},
+
+    // ✅ optional: Verlauf (nur zur Transparenz/Export, nicht fürs Lernen notwendig)
+    // wir halten den Verlauf groß, aber nicht unendlich (Speicher)
+    history: [],
+
+    // ✅ “letzte Situation” zum Bewerten (Feedback)
+    lastRun: null, // { key, ts, settings, selectedProblems, obs, field }
+
+    ui: {
+      autoRecalc: true,
+      manualDirty: false
+    }
   };
 
   let state = load() || clone(DEFAULT);
@@ -30,11 +48,10 @@
     if(!window.MACHINE_DB) { alert("MACHINE_DB fehlt (machine-data.js)"); return; }
     if(!window.AdvisorEngine) { alert("AdvisorEngine fehlt (advisor-engine.js)"); return; }
 
-    // PWA
     setupPWA();
     setupSW();
 
-    // Header buttons
+    // Header
     $("btnReset").addEventListener("click", ()=>{
       if(!confirm("Wirklich Reset? Alles wird gelöscht.")) return;
       state = clone(DEFAULT);
@@ -48,44 +65,74 @@
     $("btnCopy").addEventListener("click", (e)=>{ e.preventDefault(); navigator.clipboard?.writeText($("exportText").value); setStatus("Kopiert"); });
     $("btnDownload").addEventListener("click", (e)=>{ e.preventDefault(); downloadExport(); });
 
-    // Scroll buttons
+    // Scroll
     $("btnScrollAdvisor").addEventListener("click", ()=> $("panelAdvisor").scrollIntoView({behavior:"smooth"}));
     $("btnScrollTop").addEventListener("click", ()=> window.scrollTo({top:0, behavior:"smooth"}));
+
+    // Auto-Startwerte Toggle
+    $("autoRecalc").checked = !!state.ui.autoRecalc;
+    $("autoRecalc").addEventListener("change", ()=>{
+      state.ui.autoRecalc = $("autoRecalc").checked;
+      save();
+      setStatus(state.ui.autoRecalc ? "Auto-Startwerte: AN" : "Auto-Startwerte: AUS");
+    });
+
+    // Reset manuell -> zurück zu Auto/Personal
+    $("btnResetManual").addEventListener("click", ()=>{
+      state.ui.manualDirty = false;
+      state.steps = [];
+      computeStartwerte();         // nutzt super learning
+      computeStepsIfWanted();      // falls Probleme gewählt, sofort neu berechnen
+      renderAll();
+      setStatus("Manuell zurückgesetzt → Personal-Startwerte aktiv");
+      $("panelAdvisor").scrollIntoView({behavior:"smooth"});
+    });
 
     // Machine selects
     fillBrand();
     restoreMachine();
+
     $("brand").addEventListener("change", ()=>{
       fillModel();
-      // set first model
       const list = window.MACHINE_DB[$("brand").value] || [];
       $("model").value = list[0]?.id || "";
       syncMachineFromUI();
       onMachineChanged();
     });
+
     $("model").addEventListener("change", ()=>{
       syncMachineFromUI();
       onMachineChanged();
     });
 
-    // Field inputs
-    ["crop","mode","yieldT","moisture","straw","green","headerWidth","notes"].forEach(id=>{
+    // Feldprofil
+    const fieldIds = ["crop","mode","yieldT","moisture","straw","green","headerWidth","notes"];
+    fieldIds.forEach(id=>{
       $(id).addEventListener("change", ()=>{
         syncFieldFromUI();
-        // Bei Kulturwechsel: Startwerte neu, Probleme/Steps reset
+
         if(id==="crop"){
           state.selectedProblems = [];
           state.steps = [];
+        }
+
+        // ✅ automatisch Startwerte neu, solange Nutzer nicht manuell "dirty" ist
+        if(state.ui.autoRecalc && !state.ui.manualDirty && id !== "notes"){
           computeStartwerte();
         }
+
+        // ✅ wenn Probleme gewählt: Lösungen sofort aktualisieren
+        computeStepsIfWanted();
+
         save();
         renderAll();
-        setStatus("Profil gespeichert");
+        const extra = (state.ui.autoRecalc && !state.ui.manualDirty && id!=="notes") ? " • Startwerte aktualisiert" : "";
+        setStatus("Profil gespeichert" + extra);
       });
     });
 
-    // Problems
-    renderProblems(); // initial
+    // Problems UI
+    renderProblems();
     $("btnClearProblems").addEventListener("click", ()=>{
       state.selectedProblems = [];
       state.steps = [];
@@ -98,21 +145,17 @@
 
     // Buttons
     $("btnStartwerte").addEventListener("click", ()=>{
+      state.ui.manualDirty = false;
       computeStartwerte();
+      computeStepsIfWanted();
       renderAll();
-      setStatus("Startwerte berechnet");
+      setStatus("Startwerte berechnet (Learning)");
       $("panelAdvisor").scrollIntoView({behavior:"smooth"});
     });
 
+    // Der Button bleibt als “manuell neu rechnen”, aber ist nicht mehr nötig
     $("btnVorschlaege").addEventListener("click", ()=>{
-      ensureSettings();
-      syncFieldFromUI();
-      syncObsFromUI();
-      const m = getMachine();
-      state.steps = AdvisorEngine.buildSteps(
-        m, state.field, state.settings, state.obs, state.selectedProblems,
-        (pid)=>getLearningWeight(m.id, state.field.crop, pid)
-      );
+      computeStepsForce();
       save();
       renderSteps();
       setStatus(`${state.steps.length} Vorschlag/Vorschläge`);
@@ -132,10 +175,14 @@
         syncObsFromUI();
         save();
         renderStability();
+
+        // ✅ wenn Probleme gewählt: Lösungen sofort aktualisieren
+        computeStepsIfWanted();
+        renderSteps();
       });
     });
 
-    // Feedback
+    // Feedback => bewertet letzten Run + lernt stärker
     $("btnBetter").addEventListener("click", ()=>feedback(+1));
     $("btnSame").addEventListener("click", ()=>feedback(0));
     $("btnWorse").addEventListener("click", ()=>feedback(-1));
@@ -146,15 +193,17 @@
     onMachineChanged(true);
   }
 
+  // ---------- Status ----------
   function setStatus(t){ $("statusPill").textContent = t; }
 
-  // -------- machine helpers --------
+  // ---------- Machine helpers ----------
   function brands(){ return Object.keys(window.MACHINE_DB).sort(); }
 
   function fillBrand(){
     const b = brands();
     $("brand").innerHTML = b.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join("");
   }
+
   function fillModel(){
     const brand = $("brand").value;
     const list = window.MACHINE_DB[brand] || [];
@@ -201,17 +250,19 @@
 
   function onMachineChanged(first=false){
     updateSummary();
-
-    // Bei Maschinenwechsel: Settings neu rechnen, Steps reset
     state.steps = [];
     state.selectedProblems = [];
-    computeStartwerte();
+    state.ui.manualDirty = false;
+
+    computeStartwerte();      // nutzt Learning (all-time stats)
     renderProblems();
+    computeStepsIfWanted();
     renderAll();
-    setStatus(first ? "Bereit" : "Maschine angepasst");
+
+    setStatus(first ? "Bereit" : "Maschine angepasst (Learning geladen)");
   }
 
-  // -------- field/obs --------
+  // ---------- Field / Obs ----------
   function hydrateFieldUI(){
     $("crop").value = state.field.crop;
     $("mode").value = state.field.mode;
@@ -222,6 +273,7 @@
     $("headerWidth").value = state.field.headerWidth;
     $("notes").value = state.field.notes;
   }
+
   function syncFieldFromUI(){
     state.field.crop = $("crop").value;
     state.field.mode = $("mode").value;
@@ -246,6 +298,7 @@
       if(lab) lab.textContent = String($(id).value);
     });
   }
+
   function syncObsFromUI(){
     state.obs.rearLoss = Number($("rearLoss").value);
     state.obs.sieveLoss = Number($("sieveLoss").value);
@@ -255,12 +308,114 @@
     state.obs.dirty = Number($("dirty").value);
   }
 
-  // -------- compute/render --------
+  // ---------- SUPER LEARNING (All-time) ----------
+  function statsKey(machineId, crop){ return `${machineId}|${crop}`; }
+
+  function ensureStats(key){
+    state.stats = (state.stats && typeof state.stats==="object") ? state.stats : {};
+    if(!state.stats[key]){
+      const sumAll = {}; const sumRated = {};
+      SET_KEYS.forEach(k=>{ sumAll[k]=0; sumRated[k]=0; });
+      state.stats[key] = { nAll:0, sumAll, nRated:0, sumRated, lastTs:0 };
+    }
+    // Migration safety: missing keys
+    SET_KEYS.forEach(k=>{
+      state.stats[key].sumAll[k] ??= 0;
+      state.stats[key].sumRated[k] ??= 0;
+    });
+    return state.stats[key];
+  }
+
+  function pickSettings(s){
+    const out = {};
+    SET_KEYS.forEach(k=> out[k] = Number(s?.[k] ?? 0));
+    return out;
+  }
+
+  // ✅ zählt JEDES Mal (auch manuelle Änderungen), als “All” (unbewertet)
+  function learnUnrated(machine, crop, settings){
+    const key = statsKey(machine.id, crop);
+    const st = ensureStats(key);
+    const x = pickSettings(settings);
+
+    st.nAll += 1;
+    SET_KEYS.forEach(k=> st.sumAll[k] += x[k]);
+    st.lastTs = Date.now();
+  }
+
+  // ✅ Feedback => stärkeres Lernen (Rated)
+  function learnRated(machine, crop, settings, rating){
+    // rating: +1 better, 0 same, -1 worse
+    const key = statsKey(machine.id, crop);
+    const st = ensureStats(key);
+    const x = pickSettings(settings);
+
+    // Gewicht: better=2.0, same=1.0, worse=0.4 (worse fließt weniger ein, aber nicht 0)
+    const w = (rating === 1) ? 2.0 : (rating === 0) ? 1.0 : 0.4;
+
+    st.nRated += w;
+    SET_KEYS.forEach(k=> st.sumRated[k] += x[k] * w);
+    st.lastTs = Date.now();
+  }
+
+  function meanFromSum(sum, n){
+    const out = {};
+    SET_KEYS.forEach(k=> out[k] = sum[k] / n);
+    return out;
+  }
+
+  function getPersonalBaseline(machine, crop){
+    const key = statsKey(machine.id, crop);
+    const st = state.stats?.[key];
+    if(!st) return null;
+
+    // Wenn es KEINE Daten gibt -> null
+    const hasAll = (st.nAll && st.nAll >= 1);
+    const hasRated = (st.nRated && st.nRated >= 1);
+    if(!hasAll && !hasRated) return null;
+
+    // Mean berechnen
+    const meanAll = hasAll ? meanFromSum(st.sumAll, st.nAll) : null;
+    const meanRated = hasRated ? meanFromSum(st.sumRated, st.nRated) : null;
+
+    // Blend: wenn Rated vorhanden -> bevorzugen, sonst All
+    let blended = meanAll || meanRated;
+    if(meanAll && meanRated){
+      // je mehr rated, desto mehr gewicht
+      const alpha = clamp(0.35 + 0.10 * Math.min(6, st.nRated), 0.35, 0.85);
+      blended = {};
+      SET_KEYS.forEach(k=>{
+        blended[k] = meanAll[k]*(1-alpha) + meanRated[k]*alpha;
+      });
+    }
+
+    return AdvisorEngine.sanitize(blended, machine.limits);
+  }
+
+  // ---------- Startwerte (Auto + Learning) ----------
   function computeStartwerte(){
     syncFieldFromUI();
     const m = getMachine();
-    state.settings = AdvisorEngine.computeStart(m, state.field);
-    state.settings = AdvisorEngine.sanitize(state.settings, m.limits);
+
+    const base = AdvisorEngine.computeStart(m, state.field);
+    const personal = getPersonalBaseline(m, state.field.crop);
+
+    let final = base;
+    if(personal){
+      // Alpha abhängig von Datenmenge
+      const key = statsKey(m.id, state.field.crop);
+      const st = state.stats?.[key];
+      const n = st ? (st.nAll + st.nRated) : 0;
+      const alpha = clamp(0.20 + 0.06 * Math.min(20, n), 0.20, 0.70);
+      final = { ...base };
+      SET_KEYS.forEach(k=> final[k] = base[k]*(1-alpha) + personal[k]*alpha);
+    }
+
+    state.settings = AdvisorEngine.sanitize(final, m.limits);
+
+    // ✅ “run snapshot” aktualisieren (für späteres Feedback)
+    stampLastRun();
+
     save();
   }
 
@@ -268,6 +423,32 @@
     if(!state.settings) computeStartwerte();
   }
 
+  // ---------- Auto-Suggestions (sofort) ----------
+  function computeStepsIfWanted(){
+    // Nur wenn Probleme ausgewählt sind (dein Wunsch: “Problem klicken -> Lösung steht sofort da”)
+    if(!state.selectedProblems || state.selectedProblems.length === 0){
+      state.steps = [];
+      stampLastRun(); // trotzdem snapshot aktualisieren
+      return;
+    }
+    computeStepsForce();
+  }
+
+  function computeStepsForce(){
+    ensureSettings();
+    syncFieldFromUI();
+    syncObsFromUI();
+    const m = getMachine();
+
+    state.steps = AdvisorEngine.buildSteps(
+      m, state.field, state.settings, state.obs, state.selectedProblems,
+      (pid)=>getLearningWeight(m.id, state.field.crop, pid)
+    );
+
+    stampLastRun();
+  }
+
+  // ---------- Render ----------
   function renderAll(){
     renderProblemsPill();
     renderCards();
@@ -296,16 +477,25 @@
         btn.className = "chip" + (state.selectedProblems.includes(item.id) ? " active" : "");
         btn.title = item.hint;
         btn.textContent = item.title;
+
         btn.addEventListener("click", ()=>{
           toggleProblem(item.id);
           btn.classList.toggle("active");
+
+          // ✅ Sofort Vorschläge erzeugen (ohne Button)
+          computeStepsIfWanted();
+          save();
+          renderSteps();
+          setStatus("Probleme aktualisiert → Lösung aktualisiert");
         });
+
         chips.appendChild(btn);
       });
 
       g.appendChild(chips);
       container.appendChild(g);
     });
+
     renderProblemsPill();
   }
 
@@ -313,11 +503,6 @@
     const set = new Set(state.selectedProblems);
     if(set.has(id)) set.delete(id); else set.add(id);
     state.selectedProblems = Array.from(set);
-    state.steps = [];
-    save();
-    renderProblemsPill();
-    renderSteps();
-    setStatus(`${state.selectedProblems.length} Problem(e)`);
   }
 
   function renderProblemsPill(){
@@ -350,7 +535,7 @@
     $("stepPill").textContent = `${steps.length} Schritt(e)`;
 
     if(!steps.length){
-      $("steps").innerHTML = `<div class="hint">Wähle Probleme oder nutze Sliderwerte, dann „Vorschläge“.</div>`;
+      $("steps").innerHTML = `<div class="hint">Wähle Probleme – dann erscheinen die Lösungen sofort. (Oder nutze „Vorschläge“.)</div>`;
       return;
     }
 
@@ -381,10 +566,12 @@
         applyStep(id);
       });
     });
+
     $("steps").querySelectorAll("button[data-skip]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         const id = btn.getAttribute("data-skip");
         state.steps = state.steps.filter(s=>s.id!==id);
+        stampLastRun();
         save();
         renderSteps();
       });
@@ -397,13 +584,22 @@
     const step = state.steps.find(s=>s.id===stepId);
     if(!step) return;
 
+    state.ui.manualDirty = true;
     state.settings = AdvisorEngine.applyDelta(state.settings, step.delta);
     state.settings = AdvisorEngine.sanitize(state.settings, m.limits);
     state.steps = state.steps.filter(s=>s.id!==stepId);
 
+    // ✅ Jede Änderung zählt ins Learning (unrated)
+    learnUnrated(m, state.field.crop, state.settings);
+    pushHistory("apply_step");
+
+    // Vorschläge sofort neu berechnen (weil Ausgangslage jetzt anders)
+    computeStepsIfWanted();
+
+    stampLastRun();
     save();
     renderAll();
-    setStatus("Angewendet – prüfen");
+    setStatus("Angewendet – Learning merkt es (unbewertet)");
   }
 
   // Tuning
@@ -455,14 +651,28 @@
 
     const setVal = (v)=>{
       const m = getMachine();
+      state.ui.manualDirty = true;
+
       state.settings[key] = Number(v);
       state.settings = AdvisorEngine.sanitize(state.settings, m.limits);
+
       r.value = state.settings[key];
       n.value = state.settings[key];
       setLabel();
+
+      // ✅ Learning zählt JEDES Mal (unrated)
+      learnUnrated(m, state.field.crop, state.settings);
+      pushHistory("manual");
+
+      // ✅ Wenn Probleme gewählt: Lösungen sofort neu
+      computeStepsIfWanted();
+
+      stampLastRun();
       save();
       renderCards();
       renderChecklist();
+      renderSteps();
+      setStatus("Manuell geändert → Learning zählt (unbewertet)");
     };
 
     r.value = state.settings[key];
@@ -475,7 +685,6 @@
     return wrap;
   }
 
-  // Stability + Checklist
   function renderStability(){
     const score = AdvisorEngine.stabilityScore(state.obs);
     let label = `Stabilität: ${score}/100`;
@@ -506,28 +715,90 @@
     else if(o.sieveLoss>=5) rows.push(checkRow("warn","Siebverluste auffällig","Reinigung feinbalancieren."));
     else rows.push(checkRow("good","Siebverluste","OK."));
 
+    const key = statsKey(m.id, state.field.crop);
+    const st = state.stats?.[key];
+    const nAll = st?.nAll || 0;
+    const nRated = st?.nRated || 0;
+    if(nAll >= 5) rows.push(checkRow("good","Learning-Daten",`Gespeichert (unbewertet): ${Math.floor(nAll)} • Bewertet: ${Math.floor(nRated)} (gewichtet)`));
+    else rows.push(checkRow("warn","Learning baut sich auf",`Noch wenige Daten für ${state.field.crop}. Jede Änderung zählt, Feedback macht’s stärker.`));
+
     rows.push(checkRow("good","Routine","Nach jeder Änderung 50–150 m prüfen: Kornprobe + Verluste."));
 
     $("checklist").innerHTML = rows.join("");
   }
 
-  // Feedback learning
+  // ---------- Feedback / Problem-Learning ----------
   function lKey(machineId, crop, pid){ return `${machineId}|${crop}|${pid}`; }
   function getLearningWeight(machineId, crop, pid){ return Number(state.learning[lKey(machineId,crop,pid)] ?? 0); }
 
   function feedback(delta){
     const m = getMachine();
     const crop = state.field.crop;
+
+    // Problem learning (-2..2)
     const sel = state.selectedProblems || [];
     sel.forEach(pid=>{
       const k = lKey(m.id, crop, pid);
       state.learning[k] = clamp((Number(state.learning[k] ?? 0) + delta), -2, 2);
     });
+
+    // Rated learning: bewertet den aktuellen Settings-Stand (stärker)
+    ensureSettings();
+    learnRated(m, crop, state.settings, delta);
+
+    // Verlauf
+    pushHistory(delta === 1 ? "feedback_better" : delta === 0 ? "feedback_same" : "feedback_worse");
+
+    // Snapshot
+    stampLastRun();
+
+    // Wenn Probleme gewählt: Lösungen sofort anpassen (learning weights ändern die Reihenfolge/Delta)
+    computeStepsIfWanted();
+
     save();
-    setStatus(delta>0 ? "Feedback: besser ✅" : delta<0 ? "Feedback: schlechter ⚠️" : "Feedback: gleich");
+    renderChecklist();
+    renderSteps();
+
+    setStatus(delta>0 ? "Feedback: besser ✅ (Learning stärker)" : delta<0 ? "Feedback: schlechter ⚠️ (Learning angepasst)" : "Feedback: gleich (Learning gespeichert)");
   }
 
-  // Export/Import
+  // ---------- Run snapshot / history ----------
+  function stampLastRun(){
+    const m = getMachineSafe();
+    if(!m) return;
+    state.lastRun = {
+      key: statsKey(m.id, state.field.crop),
+      ts: Date.now(),
+      field: clone(state.field),
+      obs: clone(state.obs),
+      selectedProblems: clone(state.selectedProblems),
+      settings: pickSettings(state.settings)
+    };
+  }
+
+  function pushHistory(type){
+    const m = getMachineSafe();
+    if(!m) return;
+
+    state.history = Array.isArray(state.history) ? state.history : [];
+    state.history.push({
+      ts: Date.now(),
+      type,
+      machineId: m.id,
+      crop: state.field.crop,
+      settings: pickSettings(state.settings),
+      obs: clone(state.obs),
+      problems: clone(state.selectedProblems)
+    });
+
+    // Nicht unendlich speichern (aber “jeder Run zählt” bleibt über stats!)
+    const MAX = 350;
+    if(state.history.length > MAX){
+      state.history = state.history.slice(state.history.length - MAX);
+    }
+  }
+
+  // ---------- Export/Import ----------
   function openExport(){
     const payload = { app:"grainmaster", exportedAt: new Date().toISOString(), state };
     $("exportText").value = JSON.stringify(payload, null, 2);
@@ -559,6 +830,13 @@
       const payload = JSON.parse(txt);
       if(!payload?.state) throw new Error("no state");
       state = payload.state;
+
+      // migrations / safety
+      state.stats = (state.stats && typeof state.stats==="object") ? state.stats : {};
+      state.history = Array.isArray(state.history) ? state.history : [];
+      state.learning = (state.learning && typeof state.learning==="object") ? state.learning : {};
+      state.ui ??= { autoRecalc:true, manualDirty:false };
+
       save();
       location.reload();
     }catch{
@@ -566,7 +844,7 @@
     }
   }
 
-  // UI helpers
+  // ---------- UI helpers ----------
   function card(k, v, tag){
     return `
       <div class="card">
@@ -632,21 +910,27 @@
     upd();
   }
 
-  // storage
+  // ---------- Storage ----------
   function load(){
     try{
       const raw = localStorage.getItem(STORAGE_KEY);
       if(!raw) return null;
       const s = JSON.parse(raw);
-      // merge with DEFAULT
+
       const merged = clone(DEFAULT);
       Object.assign(merged, s);
+
       merged.machine = Object.assign(clone(DEFAULT.machine), s.machine||{});
       merged.field = Object.assign(clone(DEFAULT.field), s.field||{});
       merged.obs = Object.assign(clone(DEFAULT.obs), s.obs||{});
       merged.selectedProblems = Array.isArray(s.selectedProblems) ? s.selectedProblems : [];
       merged.steps = Array.isArray(s.steps) ? s.steps : [];
       merged.learning = (s.learning && typeof s.learning==="object") ? s.learning : {};
+      merged.stats = (s.stats && typeof s.stats==="object") ? s.stats : {};
+      merged.history = Array.isArray(s.history) ? s.history : [];
+      merged.lastRun = (s.lastRun && typeof s.lastRun==="object") ? s.lastRun : null;
+      merged.ui = Object.assign(clone(DEFAULT.ui), s.ui||{});
+
       return merged;
     }catch{
       return null;
@@ -654,24 +938,28 @@
   }
   function save(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }catch{} }
 
-  // PWA
+  // ---------- PWA ----------
   function setupPWA(){
     window.addEventListener("beforeinstallprompt",(e)=>{
       e.preventDefault();
       deferredPrompt = e;
-      $("btnInstall").hidden = false;
+      const b = $("btnInstall");
+      if(b) b.hidden = false;
     });
-    $("btnInstall").addEventListener("click", async ()=>{
-      if(!deferredPrompt) return;
-      deferredPrompt.prompt();
-      await deferredPrompt.userChoice;
-      deferredPrompt = null;
-      $("btnInstall").hidden = true;
-    });
+    const btn = $("btnInstall");
+    if(btn){
+      btn.addEventListener("click", async ()=>{
+        if(!deferredPrompt) return;
+        deferredPrompt.prompt();
+        await deferredPrompt.userChoice;
+        deferredPrompt = null;
+        btn.hidden = true;
+      });
+    }
   }
+
   function setupSW(){
     if(!("serviceWorker" in navigator)) return;
     navigator.serviceWorker.register("./sw.js").catch(()=>{});
   }
 })();
-
