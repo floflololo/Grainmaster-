@@ -1,6 +1,6 @@
 (function(){
   const $ = (id)=>document.getElementById(id);
-  const STORAGE_KEY = "grainmaster_v7";
+  const STORAGE_KEY = "grainmaster_v8";
 
   const clone = (x)=>JSON.parse(JSON.stringify(x));
   const esc = (s)=>String(s).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
@@ -20,7 +20,7 @@
     settings: null,
     steps: [],
     learning: {},
-    stats: {},       // all-time aggregated learning
+    stats: {},
     history: [],
     ui: { autoRecalc:true, manualDirty:false }
   };
@@ -34,10 +34,11 @@
     if(!window.MACHINE_DB) { alert("MACHINE_DB fehlt (machine-data.js)"); return; }
     if(!window.AdvisorEngine) { alert("AdvisorEngine fehlt (advisor-engine.js)"); return; }
 
+    injectMobileSafeUIStyles(); // ✅ macht active-chips + buttons sichtbar auf iPhone
+
     setupPWA();
     setupSW();
 
-    // Buttons (guarded)
     click("btnReset", ()=>{
       if(!confirm("Wirklich Reset? Alles wird gelöscht.")) return;
       state = clone(DEFAULT);
@@ -53,7 +54,6 @@
     click("btnScrollAdvisor", ()=> $("panelAdvisor")?.scrollIntoView({behavior:"smooth"}));
     click("btnScrollTop", ()=> window.scrollTo({top:0, behavior:"smooth"}));
 
-    // ✅ autoRecalc (GUARDED)
     const auto = $("autoRecalc");
     if(auto){
       auto.checked = !!state.ui.autoRecalc;
@@ -72,7 +72,6 @@
       setStatus("Manuell zurückgesetzt");
     });
 
-    // Machine selects
     fillBrand();
     restoreMachine();
 
@@ -89,7 +88,6 @@
       onMachineChanged();
     });
 
-    // Field events
     ["crop","mode","yieldT","moisture","straw","green","headerWidth","notes"].forEach(id=>{
       $(id)?.addEventListener("change", ()=>{
         syncFieldFromUI();
@@ -101,15 +99,13 @@
       });
     });
 
-    // Problems
     renderProblems();
     click("btnClearProblems", ()=>{
       state.selectedProblems = [];
       state.steps = [];
       save();
-      renderProblems();
-      renderSteps();
-      renderProblemsPill();
+      renderProblems();      // ✅ Chips abwählen
+      renderAll();
       setStatus("Probleme gelöscht");
     });
 
@@ -121,6 +117,7 @@
       setStatus("Startwerte berechnet");
     });
 
+    // optionaler Button
     click("btnVorschlaege", ()=>{
       computeStepsForce();
       save();
@@ -128,7 +125,6 @@
       setStatus(`${state.steps.length} Vorschlag/Vorschläge`);
     });
 
-    // Obs
     bindRange("rearLoss","rearLossVal");
     bindRange("sieveLoss","sieveLossVal");
     bindRange("tailings","tailingsVal");
@@ -146,7 +142,6 @@
       });
     });
 
-    // Feedback
     click("btnBetter", ()=>feedback(+1));
     click("btnSame", ()=>feedback(0));
     click("btnWorse", ()=>feedback(-1));
@@ -156,10 +151,39 @@
     onMachineChanged(true);
   }
 
-  function click(id, fn){ $(id)?.addEventListener("click", fn); }
-  function setStatus(t){ const p=$("statusPill"); if(p) p.textContent=t; }
+  function injectMobileSafeUIStyles(){
+    // ✅ Fix für iPhone: Active-Chips sichtbar + Controls wrap + Buttons nie “weg”
+    const css = `
+      .chip{ -webkit-tap-highlight-color: transparent; }
+      .chip.active{
+        outline: 2px solid rgba(86, 194, 255, 0.95) !important;
+        outline-offset: 2px !important;
+        box-shadow: 0 0 0 2px rgba(86,194,255,0.25) inset !important;
+      }
+      .chip:focus, .chip:focus-visible{
+        outline: 2px solid rgba(86, 194, 255, 0.95) !important;
+        outline-offset: 2px !important;
+      }
+      .step .controls{
+        display:flex !important;
+        gap:10px !important;
+        flex-wrap: wrap !important;
+        align-items:center !important;
+      }
+      .step .controls .btn{
+        flex: 0 1 auto !important;
+        min-width: 140px !important;
+      }
+    `;
+    const tag = document.createElement("style");
+    tag.textContent = css;
+    document.head.appendChild(tag);
+  }
 
-  // Machine
+  function click(id, fn){ $(id)?.addEventListener("click", fn); }
+  function setStatus(t){ $("statusPill") && ($("statusPill").textContent = t); }
+
+  // ---------- Machine ----------
   function brands(){ return Object.keys(window.MACHINE_DB).sort(); }
   function fillBrand(){
     const el=$("brand"); if(!el) return;
@@ -196,10 +220,7 @@
   }
   function updateSummary(){
     const out=$("machineSummary"); if(!out) return;
-    try{
-      const m=getMachine();
-      out.value = m.summary || "";
-    }catch{ out.value=""; }
+    try{ out.value = getMachine().summary || ""; }catch{ out.value=""; }
   }
   function onMachineChanged(first=false){
     updateSummary();
@@ -213,14 +234,14 @@
     setStatus(first ? "Bereit" : "Maschine angepasst");
   }
 
-  // Field/Obs
+  // ---------- Field / Obs ----------
+  function setVal(id,v){ const el=$(id); if(el) el.value=v; }
   function hydrateFieldUI(){
-    set("crop", state.field.crop); set("mode", state.field.mode);
-    set("yieldT", state.field.yieldT); set("moisture", state.field.moisture);
-    set("straw", state.field.straw); set("green", state.field.green);
-    set("headerWidth", state.field.headerWidth); set("notes", state.field.notes);
+    setVal("crop", state.field.crop); setVal("mode", state.field.mode);
+    setVal("yieldT", state.field.yieldT); setVal("moisture", state.field.moisture);
+    setVal("straw", state.field.straw); setVal("green", state.field.green);
+    setVal("headerWidth", state.field.headerWidth); setVal("notes", state.field.notes);
   }
-  function set(id,v){ const el=$(id); if(el) el.value=v; }
   function syncFieldFromUI(){
     state.field.crop = $("crop")?.value || state.field.crop;
     state.field.mode = $("mode")?.value || state.field.mode;
@@ -232,9 +253,9 @@
     state.field.notes = $("notes")?.value || "";
   }
   function hydrateObsUI(){
-    set("rearLoss", state.obs.rearLoss); set("sieveLoss", state.obs.sieveLoss);
-    set("tailings", state.obs.tailings); set("rotorLoad", state.obs.rotorLoad);
-    set("cracks", state.obs.cracks); set("dirty", state.obs.dirty);
+    setVal("rearLoss", state.obs.rearLoss); setVal("sieveLoss", state.obs.sieveLoss);
+    setVal("tailings", state.obs.tailings); setVal("rotorLoad", state.obs.rotorLoad);
+    setVal("cracks", state.obs.cracks); setVal("dirty", state.obs.dirty);
     ["rearLoss","sieveLoss","tailings","rotorLoad","cracks","dirty"].forEach(id=>{
       const lab=$(id+"Val"), r=$(id); if(lab&&r) lab.textContent=String(r.value);
     });
@@ -248,7 +269,7 @@
     state.obs.dirty = Number($("dirty")?.value ?? state.obs.dirty);
   }
 
-  // Learning
+  // ---------- Learning (All-time stats) ----------
   function statsKey(machineId,crop){ return `${machineId}|${crop}`; }
   function ensureStats(key){
     state.stats = (state.stats && typeof state.stats==="object") ? state.stats : {};
@@ -263,9 +284,7 @@
     });
     return state.stats[key];
   }
-  function pickSettings(s){
-    const out={}; SET_KEYS.forEach(k=> out[k]=Number(s?.[k] ?? 0)); return out;
-  }
+  function pickSettings(s){ const out={}; SET_KEYS.forEach(k=> out[k]=Number(s?.[k] ?? 0)); return out; }
   function learnUnrated(m,crop,settings){
     const st=ensureStats(statsKey(m.id,crop));
     const x=pickSettings(settings);
@@ -297,7 +316,7 @@
     return AdvisorEngine.sanitize(b, m.limits);
   }
 
-  // Startwerte
+  // ---------- Startwerte ----------
   function computeStartwerte(){
     syncFieldFromUI();
     const m = getMachine();
@@ -317,7 +336,7 @@
   }
   function ensureSettings(){ if(!state.settings) computeStartwerte(); }
 
-  // Suggestions (sofort)
+  // ---------- Suggestions (sofort) ----------
   function computeStepsIfWanted(){
     if(!state.selectedProblems?.length){ state.steps=[]; return; }
     computeStepsForce();
@@ -331,7 +350,7 @@
     );
   }
 
-  // Render
+  // ---------- Render ----------
   function renderAll(){
     renderProblemsPill();
     renderCards();
@@ -355,17 +374,27 @@
         const btn=document.createElement("button");
         btn.type="button";
         btn.className="chip"+(state.selectedProblems.includes(item.id)?" active":"");
+        btn.setAttribute("aria-pressed", state.selectedProblems.includes(item.id) ? "true" : "false");
         btn.title=item.hint;
         btn.textContent=item.title;
+
         btn.addEventListener("click", ()=>{
           const set=new Set(state.selectedProblems);
-          set.has(item.id)?set.delete(item.id):set.add(item.id);
+          const willActive = !set.has(item.id);
+          willActive ? set.add(item.id) : set.delete(item.id);
           state.selectedProblems=[...set];
+
+          // ✅ sofort optisch + state
+          btn.classList.toggle("active", willActive);
+          btn.setAttribute("aria-pressed", willActive ? "true" : "false");
+
           computeStepsIfWanted();
           save();
           renderProblemsPill();
           renderSteps();
+          setStatus("Lösungen aktualisiert");
         });
+
         chips.appendChild(btn);
       });
       g.appendChild(chips);
@@ -374,13 +403,17 @@
     renderProblemsPill();
   }
 
-  function renderProblemsPill(){ const p=$("problemsPill"); if(p) p.textContent=`${state.selectedProblems.length} gewählt`; }
+  function renderProblemsPill(){
+    const p=$("problemsPill");
+    if(p) p.textContent=`${state.selectedProblems.length} gewählt`;
+  }
 
   function renderCards(){
     const el=$("cards"); if(!el) return;
     ensureSettings();
     const m=getMachine(), s=state.settings;
     const tp=AdvisorEngine.estimateThroughput(state.field, s);
+
     el.innerHTML = [
       card("Rotor/Trommel", `${round(s.rotor,0)} ${m.limits.rotor.unit}`),
       card("Korb vorne", `${round(s.concaveFront,1)} ${m.limits.concaveFront.unit}`),
@@ -396,10 +429,12 @@
   function renderSteps(){
     const el=$("steps"); if(!el) return;
     const pill=$("stepPill"); if(pill) pill.textContent=`${(state.steps||[]).length} Schritt(e)`;
+
     if(!state.steps?.length){
       el.innerHTML = `<div class="hint">Wähle Probleme – dann erscheinen die Lösungen sofort.</div>`;
       return;
     }
+
     el.innerHTML = state.steps.map((st, idx)=>`
       <div class="step">
         <div class="head">
@@ -412,26 +447,60 @@
         <ul>${st.bullets.map(b=>`<li>${esc(b)}</li>`).join("")}</ul>
         <div class="controls">
           <button class="btn primary" data-apply="${st.id}">Anwenden</button>
+          <button class="btn ghost" data-skip="${st.id}">Überspringen</button>
         </div>
       </div>
     `).join("");
 
+    // Anwenden
     el.querySelectorAll("button[data-apply]").forEach(btn=>{
       btn.addEventListener("click", ()=>{
         const id=btn.getAttribute("data-apply");
-        const step=state.steps.find(s=>s.id===id);
-        if(!step) return;
-        const m=getMachine();
-        state.ui.manualDirty = true;
-        state.settings = AdvisorEngine.applyDelta(state.settings, step.delta);
-        state.settings = AdvisorEngine.sanitize(state.settings, m.limits);
-        learnUnrated(m, state.field.crop, state.settings);
-        state.steps = state.steps.filter(s=>s.id!==id);
-        computeStepsIfWanted();
-        save();
-        renderAll();
+        applyStep(id);
       });
     });
+
+    // Überspringen
+    el.querySelectorAll("button[data-skip]").forEach(btn=>{
+      btn.addEventListener("click", ()=>{
+        const id=btn.getAttribute("data-skip");
+        state.steps = state.steps.filter(s=>s.id!==id);
+        // Wenn nichts mehr übrig: Chips abwählen (wie du willst)
+        if(state.steps.length === 0){
+          state.selectedProblems = [];
+          renderProblems(); // ✅ sofort optisch abwählen
+        }
+        save();
+        renderSteps();
+      });
+    });
+  }
+
+  function applyStep(stepId){
+    ensureSettings();
+    const m=getMachine();
+    const step = state.steps.find(s=>s.id===stepId);
+    if(!step) return;
+
+    state.ui.manualDirty = true;
+    state.settings = AdvisorEngine.applyDelta(state.settings, step.delta);
+    state.settings = AdvisorEngine.sanitize(state.settings, m.limits);
+
+    // ✅ Learning zählt jede Änderung
+    learnUnrated(m, state.field.crop, state.settings);
+
+    // ✅ Schritt entfernen
+    state.steps = state.steps.filter(s=>s.id!==stepId);
+
+    // ✅ Wenn keine Schritte mehr da -> alles abwählen + Lösungen leer
+    if(state.steps.length === 0){
+      state.selectedProblems = [];
+      renderProblems(); // wichtig: optisch am Handy abwählen
+    }
+
+    save();
+    renderAll();
+    setStatus("Angewendet");
   }
 
   function renderTuning(){
@@ -448,6 +517,7 @@
       ["Untersieb","lowerSieve"],
       ["Geschwindigkeit","speed"]
     ];
+
     rows.forEach(([label,key])=>{
       const L=lim[key];
       const wrap=document.createElement("div");
@@ -463,22 +533,35 @@
         </div>
       `;
       container.appendChild(wrap);
+
       const r=wrap.querySelector(`#tr_${key}`);
       const n=wrap.querySelector(`#tn_${key}`);
       const tv=wrap.querySelector(`#tv_${key}`);
       const setLabel=()=> tv.textContent = `${round(state.settings[key], L.dp)} ${L.unit}`;
+
       const setVal=(v)=>{
         state.ui.manualDirty=true;
         state.settings[key]=Number(v);
         state.settings=AdvisorEngine.sanitize(state.settings, m.limits);
-        r.value=state.settings[key]; n.value=state.settings[key];
+
+        r.value=state.settings[key];
+        n.value=state.settings[key];
+
         learnUnrated(m, state.field.crop, state.settings);
+
         computeStepsIfWanted();
         save();
+
         setLabel();
-        renderCards(); renderChecklist(); renderSteps();
+        renderCards();
+        renderSteps();
+        renderChecklist();
       };
-      r.value=state.settings[key]; n.value=state.settings[key]; setLabel();
+
+      r.value=state.settings[key];
+      n.value=state.settings[key];
+      setLabel();
+
       r.addEventListener("input", ()=>setVal(r.value));
       n.addEventListener("change", ()=>setVal(n.value));
     });
@@ -497,6 +580,7 @@
     const key=statsKey(m.id, state.field.crop);
     const st=state.stats?.[key];
     const nAll=Math.floor(st?.nAll||0), nRated=Math.floor(st?.nRated||0);
+
     el.innerHTML = `
       <div class="check"><div class="dot good"></div><div><div class="t">Learning</div><div class="d">Unbewertet: ${nAll} • Bewertet: ${nRated}</div></div></div>
       <div class="check"><div class="dot good"></div><div><div class="t">Routine</div><div class="d">Nach jeder Änderung 50–150 m prüfen (Kornprobe + Verluste).</div></div></div>
@@ -506,7 +590,6 @@
   // Feedback
   function feedback(delta){
     const m=getMachine();
-    // problem learning
     (state.selectedProblems||[]).forEach(pid=>{
       const k=`${m.id}|${state.field.crop}|${pid}`;
       state.learning[k]=clamp((Number(state.learning[k]??0)+delta), -2, 2);
@@ -517,6 +600,17 @@
     renderChecklist();
     renderSteps();
     setStatus(delta>0?"Feedback: besser ✅":delta<0?"Feedback: schlechter ⚠️":"Feedback: gleich");
+  }
+
+  // helpers
+  function card(k,v){ return `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`; }
+  function groupBy(arr, fn){ const out={}; arr.forEach(x=>{ const k=fn(x); (out[k]??=[]).push(x); }); return out; }
+  function bindRange(rangeId, labelId){
+    const r=$(rangeId), l=$(labelId);
+    if(!r||!l) return;
+    const upd=()=> l.textContent=String(r.value);
+    r.addEventListener("input", upd);
+    upd();
   }
 
   // Export/Import
@@ -554,17 +648,7 @@
     }catch{ alert("Import fehlgeschlagen: ungültiger JSON."); }
   }
 
-  // helpers
-  function card(k,v){ return `<div class="card"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`; }
-  function groupBy(arr, fn){ const out={}; arr.forEach(x=>{ const k=fn(x); (out[k]??=[]).push(x); }); return out; }
-  function bindRange(rangeId, labelId){
-    const r=$(rangeId), l=$(labelId);
-    if(!r||!l) return;
-    const upd=()=> l.textContent=String(r.value);
-    r.addEventListener("input", upd); upd();
-  }
-
-  // storage
+  // Storage
   function load(){
     try{
       const raw=localStorage.getItem(STORAGE_KEY);
@@ -572,6 +656,7 @@
       const s=JSON.parse(raw);
       const merged=clone(DEFAULT);
       Object.assign(merged, s);
+
       merged.machine = Object.assign(clone(DEFAULT.machine), s.machine||{});
       merged.field = Object.assign(clone(DEFAULT.field), s.field||{});
       merged.obs = Object.assign(clone(DEFAULT.obs), s.obs||{});
@@ -581,6 +666,7 @@
       merged.stats = (s.stats && typeof s.stats==="object")?s.stats:{};
       merged.history = Array.isArray(s.history)?s.history:[];
       merged.ui = Object.assign(clone(DEFAULT.ui), s.ui||{});
+
       return merged;
     }catch{ return null; }
   }
@@ -603,6 +689,6 @@
   }
   function setupSW(){
     if(!("serviceWorker" in navigator)) return;
-    navigator.serviceWorker.register("./sw.js?v=7").catch(()=>{});
+    navigator.serviceWorker.register("./sw.js?v=8").catch(()=>{});
   }
 })();
