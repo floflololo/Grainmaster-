@@ -630,3 +630,4 @@ function card(k,v,u,tag){
     </div>
   `;
 }
+
