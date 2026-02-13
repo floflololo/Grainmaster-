@@ -6,9 +6,9 @@
   <meta name="theme-color" content="#071016" />
   <title>GrainMaster</title>
 
-  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="manifest" href="manifest.webmanifest?v=7" />
   <link rel="icon" href="icons/icon-192.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="styles.css?v=7" />
 </head>
 
 <body>
@@ -17,7 +17,7 @@
     <div class="logo">GM</div>
     <div>
       <div class="title">GrainMaster</div>
-      <div class="subtitle" id="subtitle">Mähdrusch-Einstellungen & Verlustoptimierung</div>
+      <div class="subtitle">Drescheinstellungen & Verlustoptimierung</div>
     </div>
   </div>
 
@@ -30,14 +30,11 @@
 </header>
 
 <main class="layout">
-  <!-- 1) Maschine (oben) -->
   <section class="panel" id="panelMachine">
     <div class="panel-head">
       <h2>Maschine</h2>
       <div class="pill" id="statusPill">Bereit</div>
     </div>
-
-    <p class="hint">Oben auswählen – darunter passt sich alles automatisch an. Alles wird gespeichert.</p>
 
     <div class="grid">
       <label class="field">
@@ -58,17 +55,23 @@
 
     <div class="row">
       <button class="btn primary" id="btnStartwerte">Startwerte berechnen</button>
+      <button class="btn" id="btnResetManual">Manuell zurücksetzen</button>
+
+      <label class="pill subtle" style="display:flex;gap:10px;align-items:center;">
+        <span style="color:#9fb6c9;font-size:12px;">Auto-Startwerte</span>
+        <input id="autoRecalc" type="checkbox" style="transform:scale(1.15);">
+      </label>
+
       <button class="btn warn" id="btnVorschlaege">Vorschläge</button>
       <button class="btn" id="btnClearProblems">Probleme löschen</button>
       <button class="btn ghost" id="btnScrollAdvisor">↓ Zum Advisor</button>
     </div>
   </section>
 
-  <!-- 2) Feldprofil -->
   <section class="panel" id="panelField">
     <div class="panel-head">
       <h2>Feldprofil</h2>
-      <div class="pill" id="stabilityPill">Stabilität: —</div>
+      <div class="pill subtle" id="stabilityPill">Stabilität: —</div>
     </div>
 
     <div class="grid">
@@ -134,23 +137,20 @@
     </div>
   </section>
 
-  <!-- 3) Probleme -->
   <section class="panel" id="panelProblems">
     <div class="panel-head">
       <h2>Probleme auswählen (mehrfach)</h2>
       <div class="pill subtle" id="problemsPill">0 gewählt</div>
     </div>
-    <p class="hint">Wie Advisor: Symptome anklicken → Vorschläge generieren → Schritt anwenden → prüfen.</p>
+    <p class="hint">Antippen → Lösungen erscheinen sofort im Advisor.</p>
     <div class="problem-groups" id="problemGroups"></div>
   </section>
 
-  <!-- 4) Verlust-/Prozesswerte -->
   <section class="panel" id="panelObs">
     <div class="panel-head">
       <h2>Verlust-/Prozesswerte (0–10)</h2>
-      <div class="pill subtle">Optional</div>
+      <div class="pill subtle">optional</div>
     </div>
-    <p class="hint">Hilft bei Priorisierung, wenn du nichts auswählst.</p>
 
     <div class="grid grid-2">
       <label class="field"><span>Heckverluste</span><input id="rearLoss" type="range" min="0" max="10" /><span class="mini" id="rearLossVal"></span></label>
@@ -162,7 +162,6 @@
     </div>
   </section>
 
-  <!-- 5) Advisor (Cards + Steps + Tuning) -->
   <section class="panel" id="panelAdvisor">
     <div class="panel-head">
       <h2>Advisor</h2>
@@ -174,13 +173,12 @@
 
     <div class="hr"></div>
 
-    <h2>Empfohlene Schritte</h2>
+    <h2>Lösungen / Schritte</h2>
     <div id="steps" class="steps"></div>
 
     <div class="hr"></div>
 
     <h2>Manuell einstellen</h2>
-    <p class="hint">Slider + Zahl. Grenzen passen sich dem Modell an. Speicherung automatisch.</p>
     <div id="tuning" class="tuning"></div>
 
     <div class="hr"></div>
@@ -190,7 +188,7 @@
 
     <div class="hr"></div>
 
-    <h2>Feedback (lernt pro Maschine & Kultur)</h2>
+    <h2>Feedback</h2>
     <div class="row">
       <button class="btn" id="btnBetter">Besser</button>
       <button class="btn" id="btnSame">Gleich</button>
@@ -203,14 +201,12 @@
   </section>
 </main>
 
-<!-- Import/Export -->
 <dialog id="dlgImport" class="dlg">
   <form method="dialog" class="dlg-inner">
     <div class="dlg-head">
       <h3>Import</h3>
       <button class="btn ghost" value="cancel" aria-label="Schließen">✕</button>
     </div>
-    <p class="hint">Export-JSON einfügen.</p>
     <textarea id="importText" class="textarea" rows="10" spellcheck="false"></textarea>
     <div class="dlg-actions">
       <button class="btn" value="cancel">Abbrechen</button>
@@ -225,7 +221,6 @@
       <h3>Export</h3>
       <button class="btn ghost" value="cancel" aria-label="Schließen">✕</button>
     </div>
-    <p class="hint">Kopieren oder Download.</p>
     <textarea id="exportText" class="textarea" rows="10" spellcheck="false" readonly></textarea>
     <div class="dlg-actions">
       <button class="btn" value="cancel">Schließen</button>
@@ -235,10 +230,8 @@
   </form>
 </dialog>
 
-<script src="machine-data.js"></script>
-<script src="advisor-engine.js"></script>
-<script src="app.js"></script>
+<script src="machine-data.js?v=7"></script>
+<script src="advisor-engine.js?v=7"></script>
+<script src="app.js?v=7"></script>
 </body>
 </html>
-
-
