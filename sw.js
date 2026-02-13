@@ -1,4 +1,4 @@
-const CACHE = "grainmaster-cache-v1";
+const CACHE = "grainmaster-cache-v6";
 const ASSETS = [
   "./",
   "./index.html",
@@ -30,4 +30,5 @@ self.addEventListener("fetch", (event) => {
     caches.match(event.request).then((cached) => cached || fetch(event.request).catch(()=>caches.match("./index.html")))
   );
 });
+
 
